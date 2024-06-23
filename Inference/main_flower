@@ -1,0 +1,79 @@
+import cv2
+import torch
+from ultralytics import YOLO
+from ultralytics.utils import ops
+from ultralytics.engine.results import Results
+import validation
+
+
+def replace_negatives_with_zero(lst):
+    for sublist in lst:
+        for i in range(len(sublist)):
+            if sublist[i] < 0:
+                sublist[i] = 0
+    return lst
+
+
+def extract_last_two_columns(allpreds):
+    result = []
+    for pred in allpreds:
+        last_two_columns = pred[:-2]
+        result.append(last_two_columns)
+    return result
+
+
+def postprocess(preds, img, orig_imgs, impath):
+    preds, allpreds = ops.non_max_suppression(preds,
+                                              0.3,
+                                              0.00,
+                                              agnostic=False,
+                                              max_det=300,
+                                              classes=None
+                                              )
+    if len(allpreds) > 0:
+        allpreds = extract_last_two_columns(allpreds[0])
+        allpreds = replace_negatives_with_zero(allpreds)
+    else:
+        allpreds = []
+    if not isinstance(orig_imgs, list):
+        orig_imgs = ops.convert_torch2numpy_batch(orig_imgs)
+    results = []
+    names = {0: "0"}
+    for i, pred in enumerate(preds):
+        orig_img = orig_imgs[i]
+        pred[:, :4] = ops.scale_boxes(img.shape[2:], pred[:, :4], orig_img.shape)
+        results.append(Results(orig_img, path=impath, names=names, boxes=pred))
+
+    # results is list of boxes but only the boxes that are detected with threshold
+    # allpreds is list of boxes but all of the boxes
+    return results, allpreds
+
+validation.define_label_path(validation.labels_flower_path)
+model_flower = YOLO(r"C:\Users\emrey\OneDrive\Masaüstü\BitirmeFinal\yolov8\models\flower-best.pt")
+_, _, _, flower_images, _ = validation.get_image_names()
+prediction_dict = {}
+
+for ix in range(len(flower_images)):
+    flower_results = model_flower(validation.flower_path + "\\" + flower_images[ix], save=True)
+    flower_preds = flower_results[0][0]
+    flower_rbox, flower_allbox = postprocess(flower_results[0][0], flower_results[0][1], flower_results[0][2], impath=flower_images[ix])
+    prediction_dict[flower_images[ix].split(".")[0]] = {}
+    prediction_dict[flower_images[ix].split(".")[0]]["flower"] = flower_allbox
+
+
+    try:
+        orig_labels = validation.get_label(flower_images[ix].split(".")[0])
+        predicts = validation.validate(prediction_dict)
+        image = cv2.imread(validation.flower_path + "\\" + flower_images[ix])
+        for box_color in predicts[flower_images[ix].split(".")[0]]:
+            box = box_color[0]
+            red = 255 if "flower" in box_color[1] else 0
+            image = cv2.rectangle(image, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (red, 0, 0), 2)
+        for box in orig_labels:
+            image = cv2.rectangle(image, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), (255, 255, 255), 2)
+        results_path = r"C:\Users\emrey\OneDrive\Masaüstü\BitirmeFinal\yolov8\results_flower\\"
+        cv2.imwrite(results_path + flower_images[ix], image)
+        # print(predicts)
+    except Exception as e:
+        print(e)
+        pass
